@@ -43,14 +43,29 @@ async def publish_progress(
     await redis_client.publish(channel_for_match(match_id), json.dumps(payload))
 
 
-async def publish_match_complete(match_id: uuid.UUID, winner_id: uuid.UUID) -> None:
+async def publish_match_complete(
+    match_id: uuid.UUID,
+    winner_id: uuid.UUID,
+    loser_id: uuid.UUID,
+    winner_rating_before: int,
+    winner_rating_after: int,
+    loser_rating_before: int,
+    loser_rating_after: int,
+) -> None:
     """Published exactly once per match, by whichever request's call to
     complete_match_if_winner() actually won the race (see
     matches/completion.py) -- never speculatively, and never by the losing
-    side of a race."""
+    side of a race. Carries both players' Elo before/after so either
+    client can show its own rating change straight from this one push,
+    without a separate rating lookup."""
     payload = {
         "type": "match_complete",
         "match_id": str(match_id),
         "winner_id": str(winner_id),
+        "loser_id": str(loser_id),
+        "winner_rating_before": winner_rating_before,
+        "winner_rating_after": winner_rating_after,
+        "loser_rating_before": loser_rating_before,
+        "loser_rating_after": loser_rating_after,
     }
     await redis_client.publish(channel_for_match(match_id), json.dumps(payload))

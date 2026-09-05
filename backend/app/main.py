@@ -4,7 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import routes_matches, routes_problems, routes_queue, routes_submissions, routes_ws
+from app.api import (
+    routes_matches,
+    routes_players,
+    routes_problems,
+    routes_queue,
+    routes_submissions,
+    routes_ws,
+)
 from app.matchmaking.matchmaker import matchmaker_loop
 
 
@@ -41,6 +48,7 @@ app.include_router(routes_submissions.router)
 app.include_router(routes_queue.router)
 app.include_router(routes_ws.router)
 app.include_router(routes_matches.router)
+app.include_router(routes_players.router)
 
 
 @app.get("/health")

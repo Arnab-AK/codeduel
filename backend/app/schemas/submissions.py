@@ -52,3 +52,6 @@ class SubmissionResult(BaseModel):
     # their own outcome; the opponent still learns via the WS "match_complete"
     # push (routes_ws.py).
     won_match: bool = False
+    # The winner's new Elo rating, set only alongside won_match=True. See
+    # matches/rating.py.
+    new_rating: int | None = None

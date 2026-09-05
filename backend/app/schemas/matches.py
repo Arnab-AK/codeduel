@@ -14,3 +14,7 @@ class MatchDetail(BaseModel):
     problem_id: uuid.UUID
     status: MatchStatus
     winner_id: uuid.UUID | None
+    winner_rating_before: int | None
+    winner_rating_after: int | None
+    loser_rating_before: int | None
+    loser_rating_after: int | None

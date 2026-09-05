@@ -7,6 +7,7 @@ from app.db.models import Match, MatchStatus, Problem, Submission, SubmissionSta
 from app.db.session import get_db
 from app.execution.judge import Judge, to_public_results
 from app.matches.completion import complete_match_if_winner
+from app.matches.rating import apply_elo_update
 from app.realtime.broadcaster import publish_match_complete, publish_progress
 from app.schemas.submissions import SubmissionCreate, SubmissionResult
 
@@ -86,6 +87,7 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
     await db.refresh(submission)
 
     won_match = False
+    new_rating = None
     if match is not None:
         await publish_progress(
             match_id=match.id,
@@ -104,7 +106,29 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
             # in this Python function.
             won_match = await complete_match_if_winner(db, match.id, submission.player_id)
             if won_match:
-                await publish_match_complete(match.id, submission.player_id)
+                loser_id = (
+                    match.player_two_id
+                    if submission.player_id == match.player_one_id
+                    else match.player_one_id
+                )
+                rating_result = await apply_elo_update(db, submission.player_id, loser_id)
+                new_rating = rating_result.winner_after
+                # Same lightweight audit-trail write for every match --
+                # see the Match model's rating columns.
+                match.winner_rating_before = rating_result.winner_before
+                match.winner_rating_after = rating_result.winner_after
+                match.loser_rating_before = rating_result.loser_before
+                match.loser_rating_after = rating_result.loser_after
+                await db.commit()
+                await publish_match_complete(
+                    match_id=match.id,
+                    winner_id=submission.player_id,
+                    loser_id=loser_id,
+                    winner_rating_before=rating_result.winner_before,
+                    winner_rating_after=rating_result.winner_after,
+                    loser_rating_before=rating_result.loser_before,
+                    loser_rating_after=rating_result.loser_after,
+                )
 
     return SubmissionResult(
         id=submission.id,
@@ -114,4 +138,5 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
         total_count=submission.total_count,
         results=to_public_results(submission.results or []),
         won_match=won_match,
+        new_rating=new_rating,
     )

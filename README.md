@@ -15,7 +15,7 @@ and race-condition-safe match resolution — not feature count.
 - [x] **Phase 2 — Matchmaking (Redis queue)**
 - [x] **Phase 3 — WebSocket match rooms + live opponent progress**
 - [x] **Phase 4 — Race-condition-safe win determination**
-- [ ] Phase 5 — Elo rating
+- [x] **Phase 5 — Elo rating**
 - [ ] Phase 6 — Auth
 
 ## Architecture (target end-state)
@@ -120,6 +120,10 @@ async def main():
             print(await ws.recv())
 asyncio.run(main())
 "
+
+# After a match completes, check either player's rating and the match record
+curl http://localhost:8000/players/<player_id>/rating   # -> {"rating": 1216, "matches_played": 1, ...}
+curl http://localhost:8000/matches/<match_id>            # -> includes winner_id + rating before/after
 ```
 
 ### Phase 2 slice: matchmaking
@@ -192,6 +196,17 @@ sequenceDiagram
     PG-->>A: rowcount = 1 (A's WHERE clause matched -- A committed first)
     PG-->>B: rowcount = 0 (status was already 'completed' by the time B's UPDATE ran)
     Note over A,B: A gets won_match=true, B gets won_match=false.<br/>No lost update, no double winner, no explicit lock needed.
+```
+
+### Phase 5 slice: Elo rating
+
+```mermaid
+flowchart LR
+    W[Winner declared<br/>by complete_match_if_winner] --> L1[SELECT ... FOR UPDATE<br/>both PlayerRating rows,<br/>sorted by player_id]
+    L1 --> C[Compute new ratings<br/>from BOTH current ratings]
+    C --> U[UPDATE both rows + commit]
+    U --> M[Write before/after onto<br/>the Match row for audit]
+    U --> B[Broadcast match_complete<br/>with both ratings]
 ```
 
 ## Design decisions
@@ -397,6 +412,51 @@ winners. The actual correctness guarantee is entirely inside
 `complete_match_if_winner`'s atomic UPDATE, which doesn't care what any
 earlier read observed.
 
+### Elo update: a different concurrency shape needs a different tool
+Win determination (phase 4) could be a single atomic UPDATE because the
+entire decision was "is status still in_progress" -- expressible in a
+WHERE clause with no read step. Elo update genuinely can't be: computing
+either player's new rating requires knowing BOTH players' current ratings
+first. That's a read-compute-write cycle, so `matches/rating.py` uses
+`SELECT ... FOR UPDATE` on both `PlayerRating` rows instead -- the right
+tool for a different shape of problem, not a weaker version of phase 4's.
+
+### Consistent lock ordering, proven by breaking it on purpose
+Both rating rows are locked in a fixed order -- sorted by `player_id`,
+never "winner first, then loser" -- so two concurrent updates touching the
+same *pair* of players (say, a rematch resolving while an earlier result
+for the same two is still being processed) can never acquire the two locks
+in opposite orders, which is what causes deadlock. This wasn't just
+asserted: I temporarily reverted the sort to "winner-then-loser" and reran
+`test_concurrent_updates_on_an_overlapping_pair_never_deadlock` — it
+failed immediately with Postgres's actual `DeadlockDetectedError`, not a
+hang. That run surfaced a *second*, unrelated real bug in the same
+function: `SELECT ... FOR UPDATE` only locks a row that already exists, so
+two concurrent first-ever-match calls for the same brand-new `player_id`
+could both see "no row" and both try to `INSERT`, racing into a
+unique-constraint violation. Fixed with `INSERT ... ON CONFLICT DO
+NOTHING` before the lock-and-select. Both fixes are in
+`matches/rating.py`'s module docstring with the full reasoning — this is
+the clearest example in the project of a test that found a bug it wasn't
+specifically written to find.
+
+### One row per player, not a ratings-history table
+`PlayerRating` holds only each player's *current* rating — no append-only
+history of every change. The lightweight audit trail that would otherwise
+require a history table instead lives directly on `Match`
+(`winner_rating_before/after`, `loser_rating_before/after`), populated
+once at completion. That covers "show the rating swing for this specific
+match" without the join/query overhead of a full history table — the
+right scope for "simple Elo," with a real history table as the obvious
+next step if a rating-over-time graph ever becomes a feature.
+
+### Ratings are keyed by a guest player_id, same caveat as everywhere else
+There's no user table yet (phase 6), so a rating is only as durable as
+whatever `player_id` a client happens to reuse across sessions. This is
+the same forward-compatible placeholder already used for `Match` and
+`Submission` — phase 6 replaces the source of `player_id` with a real
+authenticated user id, and none of the rating logic changes.
+
 ## Good LinkedIn-post material from this phase
 - "I sandboxed untrusted code execution with Docker, then wrote an
   adversarial test suite to try to break it" — walk through the fork bomb /
@@ -437,3 +497,15 @@ earlier read observed.
   it with two genuinely concurrent asyncio tasks racing real Postgres
   transactions rather than a test that would pass even if the
   implementation were broken.
+- Maybe the best "how I actually work" story in the whole project: I broke
+  my own deadlock fix on purpose to prove the test would catch it, and in
+  doing so found a *second*, real, previously-undetected bug (SELECT FOR
+  UPDATE not protecting row creation) that the test wasn't even written to
+  look for. That's a much stronger story than "I wrote a test and it
+  passed" — it's "I verified my test could fail, and it immediately
+  earned its keep."
+- Why win determination (a single atomic UPDATE) and Elo update (SELECT
+  FOR UPDATE + consistent lock ordering) needed two genuinely different
+  concurrency-control techniques in the same feature, and how to tell
+  which one a given problem calls for — a good demonstration of not
+  reaching for one tool everywhere.

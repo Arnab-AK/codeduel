@@ -166,3 +166,30 @@ class Match(Base):
     winner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # Populated exactly once, alongside winner_id, by matches/rating.py's
+    # Elo update -- a lightweight per-match audit trail (not a full
+    # ratings-history table) so a client can show "+18 rating" for a match
+    # without a separate query against PlayerRating.
+    winner_rating_before: Mapped[int | None] = mapped_column(nullable=True)
+    winner_rating_after: Mapped[int | None] = mapped_column(nullable=True)
+    loser_rating_before: Mapped[int | None] = mapped_column(nullable=True)
+    loser_rating_after: Mapped[int | None] = mapped_column(nullable=True)
+
+
+class PlayerRating(Base):
+    """
+    One row per player holding their CURRENT Elo rating -- not a history
+    table. player_id is the primary key directly (not a surrogate id) since
+    there is exactly one rating per player and no reason to ever look this
+    table up any other way. See matches/rating.py for how updates to it
+    stay race-safe, and Match's winner/loser_rating_before/after columns
+    for the lightweight per-match audit trail this trades off against a
+    full history table.
+    """
+    __tablename__ = "player_ratings"
+
+    player_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    rating: Mapped[int] = mapped_column(default=1200)
+    matches_played: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
