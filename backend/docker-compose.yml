@@ -1,0 +1,40 @@
+# Local dev infrastructure only. The FastAPI app itself runs on the host (not
+# in this compose file) so it can reach the host's Docker daemon to spawn
+# sandbox containers — running the API *inside* a container here would mean
+# either Docker-in-Docker or bind-mounting the host's docker.sock into it,
+# both of which add risk/complexity we don't need for local dev.
+#
+# Redis is started now even though nothing uses it until phase 2
+# (matchmaking). Standing up the infra once, early, means phase 2 is just
+# "write the code that talks to the thing that's already running."
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: codeduel-postgres
+    environment:
+      POSTGRES_USER: codeduel
+      POSTGRES_PASSWORD: codeduel_dev_only
+      POSTGRES_DB: codeduel
+    ports:
+      - "5432:5432"
+    volumes:
+      - codeduel_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codeduel -d codeduel"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: codeduel-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  codeduel_pg_data:
