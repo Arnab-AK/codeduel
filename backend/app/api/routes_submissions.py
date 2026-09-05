@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.auth.dependencies import get_current_user_id
 from app.db.models import Match, MatchStatus, Problem, Submission, SubmissionStatus
 from app.db.session import get_db
 from app.execution.judge import Judge, to_public_results
@@ -21,18 +22,24 @@ _judge = Judge()
 
 
 @router.post("", response_model=SubmissionResult)
-async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depends(get_db)):
-    if (payload.match_id is None) != (payload.player_id is None):
-        raise HTTPException(
-            status_code=400, detail="match_id and player_id must be provided together"
-        )
-
+async def create_submission(
+    payload: SubmissionCreate,
+    db: AsyncSession = Depends(get_db),
+    player_id=Depends(get_current_user_id),
+):
+    # player_id is always the authenticated caller now -- phase 1-5's
+    # "client supplies whatever player_id it wants" placeholder is gone,
+    # closing a real spoofing gap (anyone could previously submit code, or
+    # claim a match win, as any player_id they liked). Every submission,
+    # standalone practice or match-attached, is now made by a real logged-in
+    # user; there's no reason to keep an unauthenticated path for one and
+    # not the other.
     match: Match | None = None
     if payload.match_id is not None:
         match = await db.get(Match, payload.match_id)
         if match is None:
             raise HTTPException(status_code=404, detail="Match not found")
-        if payload.player_id not in (match.player_one_id, match.player_two_id):
+        if player_id not in (match.player_one_id, match.player_two_id):
             raise HTTPException(status_code=403, detail="Not a participant in this match")
         if match.problem_id != payload.problem_id:
             raise HTTPException(
@@ -68,7 +75,7 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
         code=payload.code,
         language=payload.language,
         match_id=payload.match_id,
-        player_id=payload.player_id,
+        player_id=player_id,
     )
     db.add(submission)
     await db.flush()

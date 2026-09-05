@@ -112,9 +112,12 @@ async def test_concurrent_accepted_submissions_end_to_end(duel_match):
                 code=ACCEPTED_CODE,
                 language="python",
                 match_id=match_id,
-                player_id=player_id,
             )
-            return await create_submission(payload, db)
+            # Bypassing Depends(get_current_user_id) with an explicit
+            # keyword arg, same as `db` above -- see the module docstring.
+            # player_id is no longer part of the request payload as of
+            # phase 6; it's always the authenticated caller.
+            return await create_submission(payload, db, player_id=player_id)
 
     result_a, result_b = await asyncio.gather(submit_as(player_a), submit_as(player_b))
 

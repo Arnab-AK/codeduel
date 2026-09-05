@@ -17,9 +17,17 @@ Design notes (why things look the way they do):
   before it ever reaches a response; the DB stores full detail for every case
   because we (the server) need it to grade correctly and to debug.
 
-- Submission has no user_id yet. Auth is explicitly a later phase (6) — adding
-  a dangling FK to a users table that doesn't exist yet would be worse than
-  just adding the column when auth actually lands.
+- Submission.player_id, Match.player_one_id/player_two_id, and
+  PlayerRating.player_id are all plain UUID columns with no FK to `users`,
+  even though `users` now exists (phase 6). They were introduced across
+  phases 2-5 as opaque, self-managed guest identities, before there was a
+  users table to reference; retrofitting FKs now would mean either
+  deleting all pre-auth test data or adding unvalidated constraints, for a
+  local dev database with nothing worth preserving anyway. Deliberately
+  deferred rather than done partially -- see auth/README notes for how
+  `player_id` is sourced from here on (the authenticated user's id, not a
+  client-supplied value), which is the part that actually matters for
+  correctness.
 
 - Submission.results is JSONB holding the full per-test-case verdict array.
   This is a deliberate denormalization: we don't need to query "all
@@ -193,3 +201,23 @@ class PlayerRating(Base):
     rating: Mapped[int] = mapped_column(default=1200)
     matches_played: Mapped[int] = mapped_column(default=0)
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class User(Base):
+    """
+    Phase 6. From here on, `player_id` everywhere else in the schema is
+    sourced from `User.id` (via the authenticated session, see
+    auth/dependencies.py) rather than being self-asserted by the client --
+    see the module docstring for why those existing columns aren't
+    retrofitted with FKs to this table.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(unique=True, index=True)
+    # bcrypt output, not the password itself, obviously -- see
+    # auth/security.py. Never selected into a response schema.
+    password_hash: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -16,7 +16,7 @@ and race-condition-safe match resolution — not feature count.
 - [x] **Phase 3 — WebSocket match rooms + live opponent progress**
 - [x] **Phase 4 — Race-condition-safe win determination**
 - [x] **Phase 5 — Elo rating**
-- [ ] Phase 6 — Auth
+- [x] **Phase 6 — Auth**
 
 ## Architecture (target end-state)
 
@@ -97,25 +97,32 @@ cp .env.example .env
 
 Try it:
 ```bash
-# Submit a solution
-curl -X POST http://localhost:8000/submissions -H "Content-Type: application/json" -d '{
+# Register (auto-logs-in: returns a bearer token straight away)
+curl -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" -d '{
+  "email": "alice@example.com", "password": "correct-horse-1"
+}'
+# -> {"user_id": "...", "email": "alice@example.com", "token": "..."}
+TOKEN="<token from above>"
+
+# Submit a solution -- player_id is derived from the token, never sent by the client
+curl -X POST http://localhost:8000/submissions \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{
   "problem_id": "<id from GET /problems>",
   "code": "a, b = map(int, input().split())\nprint(a + b)",
   "language": "python"
 }'
 
-# Matchmaking: join the queue twice (two "players") and watch them pair up
-curl -X POST http://localhost:8000/queue/join -H "Content-Type: application/json" -d '{"display_name": "alice"}'
-curl -X POST http://localhost:8000/queue/join -H "Content-Type: application/json" -d '{"display_name": "bob"}'
-curl http://localhost:8000/queue/status/<alice's player_id>   # -> {"status": "matched", "match_id": "..."}
+# Matchmaking: register a second user, join the queue as both, watch them pair up
+curl -X POST http://localhost:8000/queue/join -H "Authorization: Bearer $TOKEN" -d '{"display_name": "alice"}'
+curl http://localhost:8000/queue/status -H "Authorization: Bearer $TOKEN"   # -> {"status": "matched", "match_id": "..."}
 
-# Live progress: connect a player to the match room and print whatever it
-# receives (an initial snapshot, then a push whenever the OTHER player in
-# the match submits). Requires `pip install websockets`.
+# Live progress: connect to the match room over WebSocket, authenticated via
+# ?token= (not a header -- browsers can't set custom headers on a WS
+# handshake, see the Design Decisions section). Requires `pip install websockets`.
 python -c "
 import asyncio, websockets
 async def main():
-    async with websockets.connect('ws://localhost:8000/ws/matches/<match_id>?player_id=<player_id>') as ws:
+    async with websockets.connect('ws://localhost:8000/ws/matches/<match_id>?token=$TOKEN') as ws:
         while True:
             print(await ws.recv())
 asyncio.run(main())
@@ -207,6 +214,27 @@ flowchart LR
     C --> U[UPDATE both rows + commit]
     U --> M[Write before/after onto<br/>the Match row for audit]
     U --> B[Broadcast match_complete<br/>with both ratings]
+```
+
+### Phase 6 slice: auth closes the player_id spoofing gap
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as FastAPI
+    participant R as Redis (sessions)
+    participant PG as Postgres (users)
+
+    C->>API: POST /auth/register {email, password}
+    API->>PG: INSERT users (bcrypt hash, never the raw password)
+    API->>R: SET session:{token} = user_id  (7-day TTL)
+    API-->>C: {user_id, token}
+
+    Note over C,API: Every later request carries Authorization: Bearer {token}
+    C->>API: POST /submissions {problem_id, code, match_id}
+    API->>R: GET session:{token} -> user_id
+    Note over API: player_id is ALWAYS this resolved user_id now --<br/>never a value the client puts in the request body
+    API-->>C: graded result
 ```
 
 ## Design decisions
@@ -450,12 +478,64 @@ match" without the join/query overhead of a full history table — the
 right scope for "simple Elo," with a real history table as the obvious
 next step if a rating-over-time graph ever becomes a feature.
 
-### Ratings are keyed by a guest player_id, same caveat as everywhere else
-There's no user table yet (phase 6), so a rating is only as durable as
-whatever `player_id` a client happens to reuse across sessions. This is
-the same forward-compatible placeholder already used for `Match` and
-`Submission` — phase 6 replaces the source of `player_id` with a real
-authenticated user id, and none of the rating logic changes.
+### Ratings were keyed by a guest player_id, until phase 6 closed that
+Before auth landed, a rating was only as durable as whatever `player_id` a
+client happened to reuse across sessions — a forward-compatible
+placeholder, explicitly noted at the time as something phase 6 would
+replace. It now has: `player_id` is the authenticated user's real,
+permanent id, and none of the rating logic (this file, `matches/rating.py`)
+needed to change at all to pick that up -- it was always "just a UUID" to
+that code, which is exactly the point of having deferred the decision.
+
+### Auth closes a real spoofing gap, not a theoretical one
+Before phase 6, `POST /submissions` and `POST /queue/join` both accepted
+`player_id` as a client-supplied value with zero verification. Anyone
+could submit code (or claim a match win, or cancel someone's queue entry)
+as any `player_id` they liked, simply by putting a different UUID in the
+request. This wasn't a hardening pass after the fact -- every request that
+used to read `player_id` from the request body now reads it from
+`Depends(get_current_user_id)` instead, and the field was deleted from
+those request schemas entirely (not just ignored) so there's no path left
+that accepts a caller-supplied identity for anything security-relevant.
+
+### bcrypt directly, not passlib
+`passlib` is the usual recommendation for password hashing in Python, but
+its bcrypt backend has a real compatibility rough edge with recent bcrypt
+releases (it reads a version attribute newer bcrypt removed). Since this
+project only ever needs one hashing scheme, calling bcrypt's own small,
+stable API directly (`auth/security.py`) sidesteps that friction rather
+than pinning around it -- one less abstraction layer for a need that never
+called for the abstraction.
+
+### Session tokens in Redis, not JWTs
+A session is an opaque random token mapped to a user id in Redis with a
+TTL -- already-wired infrastructure (Redis is used for matchmaking and
+pub/sub elsewhere), so this is zero new infra. The concrete advantage over
+a stateless JWT: logout actually revokes the session immediately (delete
+the key), rather than needing a separate blocklist bolted onto a scheme
+that's stateless specifically so it *wouldn't* need one.
+
+### WebSocket auth has to be different, and that's a browser limitation
+Every other authenticated endpoint takes a bearer token in an
+`Authorization` header. The match WebSocket takes `?token=` in the query
+string instead -- not a style inconsistency, but a hard constraint: a
+browser's native WebSocket API has no way to set custom headers on the
+handshake request at all. Query-string auth is the accepted, if imperfect,
+answer to that in real production systems too; the known cost is visible
+right in this project's own access logs (the token appears in the request
+line for `/ws/matches/...?token=...`), which is worth being able to name
+as a tradeoff rather than something to gloss over.
+
+### What auth deliberately doesn't cover
+No rate limiting on login attempts, no password reset flow, no email
+verification, no "remember me" vs. short-lived session distinction --
+"simple email/password, don't over-build it" was the explicit brief for
+this phase, and all four are real gaps a production system would need,
+not oversights. Existing player_id columns on `Match`/`Submission`/
+`PlayerRating` also still have no FK to `users` (see db/models.py) --
+retrofitting that would mean deleting pre-auth test data or adding
+unvalidated constraints, deferred as out of scope for an auth-focused
+phase rather than done halfway.
 
 ## Good LinkedIn-post material from this phase
 - "I sandboxed untrusted code execution with Docker, then wrote an
@@ -509,3 +589,17 @@ authenticated user id, and none of the rating logic changes.
   concurrency-control techniques in the same feature, and how to tell
   which one a given problem calls for — a good demonstration of not
   reaching for one tool everywhere.
+- "Adding auth didn't just add login/logout — it deleted a real spoofing
+  vulnerability that existed in every earlier phase." Concrete, specific,
+  and shows the kind of security thinking that goes beyond "I added a
+  login page": naming the exact requests that used to trust a
+  client-supplied identity, and showing they've been changed to delete
+  that field entirely rather than merely stop reading it.
+- Why the WebSocket endpoint's auth had to work completely differently
+  from every REST endpoint's — a genuinely interesting constraint (browser
+  WebSocket API can't set custom headers) most people haven't run into,
+  with visible proof in this project's own access logs.
+- bcrypt-directly-vs-passlib and Redis-sessions-vs-JWT are both "I
+  evaluated the standard-recommended tool and chose something narrower on
+  purpose" stories — good material for "how do you decide when to reach
+  for a library vs. roll the 10 lines yourself."

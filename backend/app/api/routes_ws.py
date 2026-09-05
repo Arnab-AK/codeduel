@@ -7,10 +7,16 @@ produces these updates; this module only relays them, over the same
 Redis-pub/sub-backed channel a connection on any app instance can subscribe
 to (see broadcaster.py's docstring for why that matters).
 
-No auth yet (phase 6), so a connecting client identifies itself with the
-player_id it already holds from matchmaking -- this endpoint's only
-"authorization" check is confirming that id is actually one of the two
-players in the match it's asking to join.
+Auth: a connecting client passes its session token as a `?token=` query
+parameter, not an `Authorization` header. That's not the usual pattern
+(routes_submissions.py and routes_queue.py both use the header), but a
+browser's native WebSocket API has no way to set custom headers on the
+handshake request at all -- query string is the only option a real
+frontend actually has. The known tradeoff is that the token can end up in
+server access logs; acceptable for this project's scope, and the usual
+production mitigation (a short-lived, single-use ticket exchanged for the
+real session token right after connecting) is a reasonable next step, not
+implemented here.
 """
 import asyncio
 import uuid
@@ -18,6 +24,7 @@ import uuid
 from fastapi import APIRouter, WebSocket
 from sqlalchemy import select
 
+from app.auth.sessions import resolve_session
 from app.core.redis_client import redis_client
 from app.db.models import Match, Submission
 from app.db.session import async_session_factory
@@ -60,11 +67,17 @@ async def _match_snapshot(match: Match) -> dict:
 
 
 @router.websocket("/ws/matches/{match_id}")
-async def match_room(websocket: WebSocket, match_id: uuid.UUID, player_id: uuid.UUID):
+async def match_room(websocket: WebSocket, match_id: uuid.UUID, token: str):
     # Accept first, then validate: closing with a specific code/reason is
     # more reliably observable to a browser WebSocket client after a
     # completed handshake than rejecting the handshake outright.
     await websocket.accept()
+
+    player_id = await resolve_session(token)
+    if player_id is None:
+        await websocket.send_json({"type": "error", "detail": "Invalid or expired session"})
+        await websocket.close(code=4401)
+        return
 
     async with async_session_factory() as db:
         match = await db.get(Match, match_id)

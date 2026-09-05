@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
+    routes_auth,
     routes_matches,
     routes_players,
     routes_problems,
@@ -32,10 +33,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CodeDuel", lifespan=lifespan)
 
 # Dev-only convenience: the frontend runs on a different origin/port during
-# local development. This is intentionally permissive (`*`) because there
-# are no cookies/credentialed requests yet (auth is phase 6) -- revisit this
-# to a real allowlist once auth introduces session cookies or bearer tokens
-# whose exposure actually matters.
+# local development. Still fine now that auth exists (phase 6): sessions
+# are bearer tokens in an Authorization header set explicitly by client JS,
+# not cookies -- the browser CORS restrictions this wildcard would actually
+# be dangerous for (allow_origins="*" combined with allow_credentials=True,
+# i.e. cookie-based auth) don't apply here. Revisit if cookie-based auth
+# ever replaces this.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,6 +52,7 @@ app.include_router(routes_queue.router)
 app.include_router(routes_ws.router)
 app.include_router(routes_matches.router)
 app.include_router(routes_players.router)
+app.include_router(routes_auth.router)
 
 
 @app.get("/health")
