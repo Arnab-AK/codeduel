@@ -9,6 +9,13 @@ class SubmissionCreate(BaseModel):
     problem_id: uuid.UUID
     code: str
     language: str = "python"
+    # Both optional together: omit both for a standalone practice submission
+    # (phase 1's original use case), or provide both to attach this
+    # submission to a live duel -- which is what makes the judge publish a
+    # live progress update to the match's WebSocket room. See
+    # routes_submissions.py for the "provide both or neither" validation.
+    match_id: uuid.UUID | None = None
+    player_id: uuid.UUID | None = None
 
 
 class TestCaseResultPublic(BaseModel):

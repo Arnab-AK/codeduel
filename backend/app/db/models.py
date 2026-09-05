@@ -109,6 +109,15 @@ class Submission(Base):
     problem_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("problems.id", ondelete="CASCADE")
     )
+    # Both nullable: a submission can stand alone (phase 1's original
+    # use case -- practicing a problem outside any duel) or belong to a
+    # live match (phase 3+). match_id has a real FK since Match already
+    # exists; player_id doesn't, same reasoning as Match's own player
+    # columns -- there's no users table yet for it to reference.
+    match_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("matches.id", ondelete="CASCADE"), nullable=True
+    )
+    player_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     code: Mapped[str] = mapped_column(Text)
     language: Mapped[str] = mapped_column(default="python")
     status: Mapped[SubmissionStatus] = mapped_column(

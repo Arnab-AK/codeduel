@@ -13,7 +13,7 @@ and race-condition-safe match resolution — not feature count.
 
 - [x] **Phase 1 — Problem model + sandboxed submission judging**
 - [x] **Phase 2 — Matchmaking (Redis queue)**
-- [ ] Phase 3 — WebSocket match rooms + live opponent progress
+- [x] **Phase 3 — WebSocket match rooms + live opponent progress**
 - [ ] Phase 4 — Race-condition-safe win determination
 - [ ] Phase 5 — Elo rating
 - [ ] Phase 6 — Auth
@@ -108,6 +108,18 @@ curl -X POST http://localhost:8000/submissions -H "Content-Type: application/jso
 curl -X POST http://localhost:8000/queue/join -H "Content-Type: application/json" -d '{"display_name": "alice"}'
 curl -X POST http://localhost:8000/queue/join -H "Content-Type: application/json" -d '{"display_name": "bob"}'
 curl http://localhost:8000/queue/status/<alice's player_id>   # -> {"status": "matched", "match_id": "..."}
+
+# Live progress: connect a player to the match room and print whatever it
+# receives (an initial snapshot, then a push whenever the OTHER player in
+# the match submits). Requires `pip install websockets`.
+python -c "
+import asyncio, websockets
+async def main():
+    async with websockets.connect('ws://localhost:8000/ws/matches/<match_id>?player_id=<player_id>') as ws:
+        while True:
+            print(await ws.recv())
+asyncio.run(main())
+"
 ```
 
 ### Phase 2 slice: matchmaking
@@ -137,6 +149,32 @@ sequenceDiagram
     API-->>A: {status: matched, match_id}
     B->>API: GET /queue/status/B
     API-->>B: {status: matched, match_id}
+```
+
+### Phase 3 slice: live opponent progress
+
+```mermaid
+sequenceDiagram
+    participant A as Player A
+    participant B as Player B
+    participant API as FastAPI
+    participant R as Redis pub/sub
+    participant PG as Postgres
+
+    A->>API: WS connect /ws/matches/{id}?player_id=A
+    API-->>A: {type: snapshot, players: {A: null, B: null}}
+    API->>R: SUBSCRIBE match:{id}:progress
+    B->>API: WS connect /ws/matches/{id}?player_id=B
+    API-->>B: {type: snapshot, ...}
+    API->>R: SUBSCRIBE match:{id}:progress
+
+    A->>API: POST /submissions {match_id, player_id: A, code}
+    API->>API: Judge.grade (sandboxed run)
+    API-->>A: full result (own code's own business)
+    API->>R: PUBLISH match:{id}:progress {player_id: A, passed: 3, total: 5}
+    R-->>API: relay to B's subscription
+    API-->>B: {type: progress, player_id: A, passed_count: 3, total_count: 5}
+    Note over A,B: B never receives A's code or per-test detail
 ```
 
 ## Design decisions
@@ -254,6 +292,55 @@ previous game. Fixed by clearing the old match assignment as part of
 was written to check; walking the actual flow by hand still finds things
 tests didn't think to ask.
 
+### Progress granularity: per-submission, not per-test-case
+Our sandbox runs finish in tens of milliseconds (see phase 1) — streaming
+updates *within* a single run wouldn't be visible, let alone useful. The
+signal that actually matters in a duel is *across* submissions: "opponent
+just submitted, now at 3/5 passing." So a live progress push happens once
+per graded submission, not once per test case inside it. Building
+intra-run streaming (the harness writing incremental progress mid-run,
+the host polling for it) would have been solving a UX problem this
+project's execution speed doesn't create.
+
+### Redis pub/sub as the fan-out, not an in-process connection registry
+The obvious naive approach is a process-wide `dict[match_id, list[WebSocket]]`.
+That works right up until there's more than one app instance behind a load
+balancer, at which point player A's submission and player B's WebSocket
+connection can silently end up on different instances that never talk to
+each other — a bug that's invisible in local dev (there's only ever one
+instance) and only shows up in production. Every WS connection instead
+subscribes to a Redis channel (`match:{id}:progress`); the judge publishes
+to that channel rather than reaching into any local connection state. Same
+number of moving parts today, correct at a scale this project isn't even
+running at yet.
+
+### Redaction lives in one place: the publisher, not the relay
+`realtime/broadcaster.py`'s `publish_progress()` is the only function that
+constructs the message that goes out over Redis — it takes `passed_count`/
+`total_count`/`status` as explicit arguments, not a `Submission` object it
+could be tempted to serialize wholesale. The WebSocket handler that relays
+it (`routes_ws.py`) never sees the submission, the code, or the results
+JSON at all — there's nothing for it to accidentally leak, by construction,
+rather than by remembering to redact at the point where it's used.
+
+### A known gap: no automated test drives the WebSocket end-to-end
+`engine` and `redis_client` are process-wide async singletons — the right
+design for the real app (exactly one event loop for its whole life).
+Starlette's `TestClient`, however, drives the ASGI app from a *separate*
+thread with its *own* event loop, so any test mixing `TestClient` with
+those singletons hits the same cross-loop connection error phase 1 already
+surfaced once (see the pytest-asyncio note in `pytest.ini`) — just from a
+different direction, and not fixable by a pytest-config tweak this time
+without adding real dependency-injection plumbing to swap those singletons
+per-test. Rather than force that in, this phase was verified with a live
+smoke test instead — two real WebSocket connections, over real sockets,
+against the actual running dev server, driving the full matchmaking →
+connect → submit → push flow end-to-end. Arguably the more convincing proof
+for a feature whose entire point is "real concurrent socket connections,"
+but it's a manual step, not something CI runs — worth fixing properly
+(via a request/test-scoped resource factory) before this ever needs to gate
+a deploy.
+
 ## Good LinkedIn-post material from this phase
 - "I sandboxed untrusted code execution with Docker, then wrote an
   adversarial test suite to try to break it" — walk through the fork bomb /
@@ -272,3 +359,16 @@ tests didn't think to ask.
 - The stale-match bug: a good story about the limits of automated tests and
   the value of manually exercising a feature end-to-end before calling it
   done.
+- "Why I chose Redis pub/sub over an in-memory connection registry for
+  WebSocket fan-out" — a small decision that's invisible until you scale
+  past one instance, which is exactly the kind of thing that's worth being
+  able to explain even in a single-instance portfolio deployment.
+- The redaction-by-construction design in `broadcaster.py` (the function
+  signature itself makes leaking code impossible, rather than relying on
+  remembering to strip it) — a nice example of designing an API so the
+  unsafe thing is simply not expressible.
+- The honest gap: process-wide async singletons vs. `TestClient`'s
+  threaded execution model, and why this phase shipped with a live smoke
+  test instead of an automated one — a good "here's a real engineering
+  tradeoff I made and can defend" story rather than a claim that
+  everything has 100% automated coverage.
