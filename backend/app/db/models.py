@@ -158,5 +158,11 @@ class Match(Base):
     status: Mapped[MatchStatus] = mapped_column(
         SAEnum(MatchStatus, name="match_status"), default=MatchStatus.IN_PROGRESS
     )
+    # Set exactly once, by the single atomic UPDATE in
+    # matches/completion.py that also flips status to COMPLETED -- see that
+    # module for why this is safe under two players submitting an accepted
+    # solution near-simultaneously. No FK, same reasoning as the player
+    # columns above.
+    winner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

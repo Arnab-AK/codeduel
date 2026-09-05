@@ -45,3 +45,10 @@ class SubmissionResult(BaseModel):
     passed_count: int
     total_count: int
     results: list[TestCaseResultPublic]
+    # True only for the one request that actually won a match-completion
+    # race (see matches/completion.py) -- always False for a standalone
+    # submission. Told to the winner directly in their own HTTP response
+    # rather than relying on them having their own WebSocket message for
+    # their own outcome; the opponent still learns via the WS "match_complete"
+    # push (routes_ws.py).
+    won_match: bool = False

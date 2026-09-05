@@ -41,3 +41,16 @@ async def publish_progress(
         "status": status,
     }
     await redis_client.publish(channel_for_match(match_id), json.dumps(payload))
+
+
+async def publish_match_complete(match_id: uuid.UUID, winner_id: uuid.UUID) -> None:
+    """Published exactly once per match, by whichever request's call to
+    complete_match_if_winner() actually won the race (see
+    matches/completion.py) -- never speculatively, and never by the losing
+    side of a race."""
+    payload = {
+        "type": "match_complete",
+        "match_id": str(match_id),
+        "winner_id": str(winner_id),
+    }
+    await redis_client.publish(channel_for_match(match_id), json.dumps(payload))

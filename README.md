@@ -14,7 +14,7 @@ and race-condition-safe match resolution — not feature count.
 - [x] **Phase 1 — Problem model + sandboxed submission judging**
 - [x] **Phase 2 — Matchmaking (Redis queue)**
 - [x] **Phase 3 — WebSocket match rooms + live opponent progress**
-- [ ] Phase 4 — Race-condition-safe win determination
+- [x] **Phase 4 — Race-condition-safe win determination**
 - [ ] Phase 5 — Elo rating
 - [ ] Phase 6 — Auth
 
@@ -175,6 +175,23 @@ sequenceDiagram
     R-->>API: relay to B's subscription
     API-->>B: {type: progress, player_id: A, passed_count: 3, total_count: 5}
     Note over A,B: B never receives A's code or per-test detail
+```
+
+### Phase 4 slice: race-condition-safe win determination
+
+```mermaid
+sequenceDiagram
+    participant A as Player A's request
+    participant B as Player B's request
+    participant PG as Postgres (matches row)
+
+    Note over A,B: Both submit an ACCEPTED solution within milliseconds
+    A->>PG: UPDATE matches SET status='completed', winner_id=A WHERE id=X AND status='in_progress'
+    B->>PG: UPDATE matches SET status='completed', winner_id=B WHERE id=X AND status='in_progress'
+    Note over PG: Postgres serializes the two UPDATEs on the same row
+    PG-->>A: rowcount = 1 (A's WHERE clause matched -- A committed first)
+    PG-->>B: rowcount = 0 (status was already 'completed' by the time B's UPDATE ran)
+    Note over A,B: A gets won_match=true, B gets won_match=false.<br/>No lost update, no double winner, no explicit lock needed.
 ```
 
 ## Design decisions
@@ -341,6 +358,45 @@ but it's a manual step, not something CI runs — worth fixing properly
 (via a request/test-scoped resource factory) before this ever needs to gate
 a deploy.
 
+### Atomic UPDATE-with-guard, not SELECT FOR UPDATE
+Two ways to make "declare a winner" race-safe: (a) `SELECT ... FOR UPDATE`
+to lock the row, check its status in application code, then `UPDATE` if
+still in progress; or (b) a single `UPDATE ... WHERE status = 'in_progress'`
+that folds the check into the write itself. This project uses (b) — one
+round trip instead of two, and there's no window between "check" and "act"
+for application code to get it wrong, because there is no separate check
+step. `SELECT FOR UPDATE` is the more general tool (needed when the
+decision requires reading several things before deciding what to write);
+here, the entire decision *is* "is status still in_progress", which the
+UPDATE's own WHERE clause already expresses.
+
+### Proven with a genuine concurrency test, not a sequential one
+`tests/test_match_completion.py` doesn't just call
+`complete_match_if_winner` twice in a row — that would pass even with a
+naive, non-atomic implementation, since sequential calls never actually
+contend for anything. Both attempts are started as separate asyncio tasks
+gated behind a shared `asyncio.Event`, released together, so their UPDATEs
+reach Postgres as close to simultaneously as the process can arrange, each
+over its own real connection and transaction. The test asserts the
+invariant (`result_a != result_b` — never both, never neither) rather than
+which one wins, since which one wins is genuinely nondeterministic and
+running it repeatedly confirms both outcomes actually occur. A separate
+end-to-end test races two calls to the real `create_submission` handler
+itself (not just the completion primitive), and a live smoke test against
+the real running server confirmed the same thing over actual HTTP requests
+and a real WebSocket push — the winner varying run-to-run there too.
+
+### The pre-check that isn't the guarantee
+`routes_submissions.py` rejects a submission with 409 if the match's
+status isn't `in_progress` — but this check happens via a plain read
+*before* grading, so it has its own (harmless) race: the match could
+complete in the gap between this check and the grading finishing. That's
+fine, and deliberate: this check exists purely to avoid burning a sandbox
+run on a match that's obviously already over, not to prevent double
+winners. The actual correctness guarantee is entirely inside
+`complete_match_if_winner`'s atomic UPDATE, which doesn't care what any
+earlier read observed.
+
 ## Good LinkedIn-post material from this phase
 - "I sandboxed untrusted code execution with Docker, then wrote an
   adversarial test suite to try to break it" — walk through the fork bomb /
@@ -372,3 +428,12 @@ a deploy.
   test instead of an automated one — a good "here's a real engineering
   tradeoff I made and can defend" story rather than a claim that
   everything has 100% automated coverage.
+- This is probably the single best interview story in the whole project:
+  "two players submit a winning solution within milliseconds of each
+  other — how do you guarantee exactly one of them wins, with no lost
+  update, using nothing but a single UPDATE statement?" Walk through
+  `matches/completion.py`'s docstring, why an atomic UPDATE-with-guard
+  beats SELECT FOR UPDATE here, and how `test_match_completion.py` proves
+  it with two genuinely concurrent asyncio tasks racing real Postgres
+  transactions rather than a test that would pass even if the
+  implementation were broken.

@@ -50,7 +50,13 @@ async def _match_snapshot(match: Match) -> dict:
                 if latest
                 else None
             )
-    return {"type": "snapshot", "match_id": str(match.id), "players": players}
+    return {
+        "type": "snapshot",
+        "match_id": str(match.id),
+        "match_status": match.status.value,
+        "winner_id": str(match.winner_id) if match.winner_id else None,
+        "players": players,
+    }
 
 
 @router.websocket("/ws/matches/{match_id}")

@@ -3,10 +3,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Match, Problem, Submission
+from app.db.models import Match, MatchStatus, Problem, Submission, SubmissionStatus
 from app.db.session import get_db
 from app.execution.judge import Judge, to_public_results
-from app.realtime.broadcaster import publish_progress
+from app.matches.completion import complete_match_if_winner
+from app.realtime.broadcaster import publish_match_complete, publish_progress
 from app.schemas.submissions import SubmissionCreate, SubmissionResult
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -36,6 +37,16 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
             raise HTTPException(
                 status_code=400, detail="problem_id does not match this match's assigned problem"
             )
+        if match.status != MatchStatus.IN_PROGRESS:
+            # Best-effort, NOT the correctness guarantee: this is a plain
+            # read, so it's possible (if rare) for the match to complete in
+            # the gap between this check and the grading below -- that's
+            # fine, because the actual guarantee against two winners lives
+            # entirely in complete_match_if_winner()'s atomic UPDATE, not
+            # here. This check exists purely so an obviously-late
+            # submission gets rejected immediately instead of burning a
+            # sandbox run on a match that's already decided.
+            raise HTTPException(status_code=409, detail="Match is no longer in progress")
 
     problem = (
         await db.execute(
@@ -74,6 +85,7 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
     await db.commit()
     await db.refresh(submission)
 
+    won_match = False
     if match is not None:
         await publish_progress(
             match_id=match.id,
@@ -82,6 +94,17 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
             total_count=submission.total_count,
             status=submission.status.value,
         )
+        if submission.status == SubmissionStatus.ACCEPTED:
+            # See matches/completion.py for the atomicity this relies on.
+            # If two players' ACCEPTED submissions land here within
+            # milliseconds of each other, exactly one of these two calls
+            # (across the two concurrent requests) gets won_match = True --
+            # guaranteed by Postgres's row-level locking on the UPDATE
+            # inside complete_match_if_winner, not by anything sequenced
+            # in this Python function.
+            won_match = await complete_match_if_winner(db, match.id, submission.player_id)
+            if won_match:
+                await publish_match_complete(match.id, submission.player_id)
 
     return SubmissionResult(
         id=submission.id,
@@ -90,4 +113,5 @@ async def create_submission(payload: SubmissionCreate, db: AsyncSession = Depend
         passed_count=submission.passed_count,
         total_count=submission.total_count,
         results=to_public_results(submission.results or []),
+        won_match=won_match,
     )
