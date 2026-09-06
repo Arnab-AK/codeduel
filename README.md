@@ -17,6 +17,7 @@ and race-condition-safe match resolution — not feature count.
 - [x] **Phase 4 — Race-condition-safe win determination**
 - [x] **Phase 5 — Elo rating**
 - [x] **Phase 6 — Auth**
+- [x] **Minimal React frontend** (register → matchmaking → live duel → winner banner)
 
 ## Architecture (target end-state)
 
@@ -236,6 +237,66 @@ sequenceDiagram
     Note over API: player_id is ALWAYS this resolved user_id now --<br/>never a value the client puts in the request body
     API-->>C: graded result
 ```
+
+## Frontend
+
+A minimal React app (Vite, plain JS, no UI library) covering the whole
+loop: register/login, join the queue, watch a live duel, see the winner
+and rating change. It exists to make the backend's real-time behavior
+*visible* — screenshots/demos of two browser tabs racing are a much
+stronger portfolio artifact than a curl transcript — not to be a frontend
+showcase; there's no router, no state management library, no component
+library.
+
+### Running it
+
+```bash
+cd frontend
+npm install
+cp .env.example .env      # points at the local backend by default
+npm run dev               # -> http://localhost:5173
+```
+
+The backend must already be running (`docker compose up -d` + `uvicorn`,
+see above) — the frontend is a pure client of the same API used throughout
+this README's `curl` examples.
+
+### Frontend design decisions
+
+**No router, no state library.** The whole app is one linear flow --
+auth screen, then lobby, then match view -- so a single `view` decided by
+`App.jsx`'s state (do we have a session? a matchId?) is simpler than
+pulling in `react-router` for three screens that are never deep-linked to
+directly. Same reasoning for state: plain `useState`/`useEffect` is
+enough for a tree this shallow; Redux/Zustand would be solving a problem
+this app doesn't have.
+
+**Lobby polls `/queue/status`; the match view opens a WebSocket.**
+Different tools for different lifetimes: waiting in a queue is short and
+tolerant of a ~1s delay in noticing a match, so polling is simpler than
+justifying a second WebSocket connection for it. Once inside a match, the
+whole point is low-latency opponent updates for the match's entire
+duration -- that's exactly what the phase 3 WebSocket exists for, and the
+frontend just consumes it directly rather than re-deriving the same
+signal by polling.
+
+**Session in `localStorage`, token in a query param for the one place a
+header won't work.** The bearer token lives in `localStorage` and rides
+on every REST call as an `Authorization` header; the one exception is the
+match WebSocket, which authenticates via `?token=` in the URL because a
+browser's native `WebSocket` API cannot set custom headers on the
+handshake at all -- the same constraint documented on the backend side.
+
+**Verified in an actual headless browser, not just "should work."**
+Two independent browser contexts (so two separate `localStorage`s, i.e.
+two real logged-in users) drove the full flow end-to-end with Playwright:
+register both, queue both, land in the same match, submit a winning
+solution as one, and confirm the *other* browser context's UI updates
+live from the WebSocket push -- with a check for zero console/network
+errors along the way. That's what caught a real layout bug (native
+`<button>` is `inline-block` by default, so two sibling buttons in the
+lobby card sat side by side instead of stacking) that would have been
+easy to miss reading the JSX alone.
 
 ## Design decisions
 
@@ -603,3 +664,9 @@ phase rather than done halfway.
   evaluated the standard-recommended tool and chose something narrower on
   purpose" stories — good material for "how do you decide when to reach
   for a library vs. roll the 10 lines yourself."
+- The frontend verification itself is a good post: two independent
+  headless-browser sessions (two real logged-in users, two real
+  WebSocket connections) driving the entire duel end-to-end, screenshot
+  by screenshot, and catching a real layout bug in the process — a
+  concrete example of "verify it actually works" applied to UI, not just
+  backend logic.

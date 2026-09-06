@@ -1,0 +1,248 @@
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #facc15;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.centered {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+}
+
+.card h1 {
+  margin: 0 0 0.25rem;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+.rating {
+  color: var(--muted);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1.5rem 0 1rem;
+}
+
+input,
+textarea,
+button {
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+input {
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+button {
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #0f172a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Scoped to the auth/lobby card specifically: native <button> is
+   inline-block by default, so two sibling buttons (e.g. "Find Match" and
+   "Log out") sit side by side in a 360px card instead of stacking. The
+   code panel's Submit button already spans full width for free (it's a
+   flex child of .code-panel with the default stretch alignment), and the
+   banner's "Back to lobby" button is meant to stay compact and centered
+   via .banner's text-align -- neither should get this rule too. */
+.centered button {
+  display: block;
+  width: 100%;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  margin-top: 0.5rem;
+}
+
+button.link {
+  background: none;
+  color: var(--accent);
+  font-weight: 400;
+  text-decoration: underline;
+  padding: 0.25rem;
+  margin-top: 1rem;
+}
+
+.error {
+  color: var(--red);
+  font-size: 0.9rem;
+}
+
+.pulse {
+  color: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Match view: problem on the left, code + live opponent status on the right */
+.match-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  min-height: 100vh;
+}
+
+.panel {
+  background: var(--bg);
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.description {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.badge-easy { background: rgba(74, 222, 128, 0.2); color: var(--green); }
+.badge-medium { background: rgba(250, 204, 21, 0.2); color: var(--yellow); }
+.badge-hard { background: rgba(248, 113, 113, 0.2); color: var(--red); }
+
+.example {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.example code {
+  color: var(--accent);
+}
+
+.opponent-progress {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.status-accepted { color: var(--green); }
+.status-wrong_answer, .status-runtime_error, .status-timeout { color: var(--red); }
+
+.code-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+textarea {
+  flex: 1;
+  min-height: 320px;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.9rem;
+  resize: vertical;
+}
+
+.result {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  font-weight: 600;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.result-accepted { color: var(--green); }
+.result-wrong_answer, .result-runtime_error, .result-timeout { color: var(--red); }
+
+.banner {
+  padding: 1.5rem;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.banner-win {
+  background: rgba(74, 222, 128, 0.15);
+  border: 1px solid var(--green);
+}
+
+.banner-lose {
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px solid var(--red);
+}
+
+.banner h2 {
+  margin-top: 0;
+}
+
+@media (max-width: 800px) {
+  .match-layout {
+    grid-template-columns: 1fr;
+  }
+}
