@@ -121,13 +121,25 @@ export default function MatchView({ session, matchId, onExit }) {
         <div className="opponent-progress">
           <h3>Opponent</h3>
           {opponentProgress ? (
-            <p>
-              {opponentProgress.passed_count}/{opponentProgress.total_count} tests passing
-              <span className={`status status-${opponentProgress.status}`}>
-                {" "}
-                ({opponentProgress.status})
-              </span>
-            </p>
+            <>
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{
+                    width: `${Math.round(
+                      (opponentProgress.passed_count / opponentProgress.total_count) * 100
+                    )}%`,
+                  }}
+                />
+              </div>
+              <p>
+                {opponentProgress.passed_count}/{opponentProgress.total_count} tests passing
+                <span className={`status status-${opponentProgress.status}`}>
+                  {" "}
+                  ({opponentProgress.status})
+                </span>
+              </p>
+            </>
           ) : (
             <p className="muted">No submissions yet</p>
           )}

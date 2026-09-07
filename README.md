@@ -9,6 +9,20 @@ This is a portfolio project built to demonstrate backend/distributed-systems
 depth: sandboxed untrusted-code execution, real-time sync over WebSockets,
 and race-condition-safe match resolution — not feature count.
 
+## Screenshots
+
+Two independent logged-in browser sessions racing the same problem in real
+time — everything below is the actual app, not a mockup.
+
+| | |
+|---|---|
+| ![Match result: winner and loser banners side by side, with rating changes](docs/screenshots/06-match-result.png) | ![Live duel: both players' progress bars updating mid-match](docs/screenshots/05-match-progress.png) |
+| Match complete — winner/loser banners + Elo rating swing | Live duel — opponent's test-pass progress streaming over WebSocket |
+| ![Lobby with two players queued, ratings shown](docs/screenshots/02-lobby.png) | ![Just matched: same problem loaded for both players](docs/screenshots/04-match-start.png) |
+| Lobby — matchmaking queue | Just matched — same problem, empty scoreboard |
+| ![Login screen](docs/screenshots/01-auth.png) | ![One player waiting for an opponent while the other is still in the lobby](docs/screenshots/03-lobby-waiting.png) |
+| Auth | Waiting for an opponent |
+
 ## Status
 
 - [x] **Phase 1 — Problem model + sandboxed submission judging**

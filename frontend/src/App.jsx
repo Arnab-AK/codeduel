@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import AuthForm from "./components/AuthForm.jsx";
 import Lobby from "./components/Lobby.jsx";
 import MatchView from "./components/MatchView.jsx";
+import MatrixRain from "./components/MatrixRain.jsx";
 
 const SESSION_KEY = "codeduel_session";
 
@@ -26,13 +27,19 @@ export default function App() {
     setSession(null);
   }
 
-  if (!session) {
-    return <AuthForm onAuth={setSession} />;
-  }
-  if (!matchId) {
-    return <Lobby session={session} onLogout={handleLogout} onMatched={setMatchId} />;
-  }
   return (
-    <MatchView session={session} matchId={matchId} onExit={() => setMatchId(null)} />
+    <>
+      <MatrixRain />
+      <div className="scanlines" aria-hidden="true" />
+      <div className="app-content">
+        {!session && <AuthForm onAuth={setSession} />}
+        {session && !matchId && (
+          <Lobby session={session} onLogout={handleLogout} onMatched={setMatchId} />
+        )}
+        {session && matchId && (
+          <MatchView session={session} matchId={matchId} onExit={() => setMatchId(null)} />
+        )}
+      </div>
+    </>
   );
 }
